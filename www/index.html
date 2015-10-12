@@ -1,0 +1,165 @@
+<html>
+	<head>
+		<title>Civetweb/Javascript Tests</title>
+		<style>
+			body {
+				font-family: Monospace;
+				background-color: #f0f0f0;
+				margin: 15px;
+				overflow: hidden;
+			}
+			canvas { width: 100%; height: 100% }
+		</style>
+	</head>
+	<body>
+		<script src="js/three.min.js"></script>
+		<script src="js/TrackballControls.js"></script>
+		<ul>
+			<li><a href="CalibVolume.html">Many Random Wands in a Volume</a></li>
+		</ul>
+		<canvas id='canvas' width=640 height=480></canvas>
+		<div id='status'>WTF Status</div>
+		<div id='log'>
+			
+		</div>
+		<script>
+			var statusElm = document.getElementById('status');
+			var logElm = document.getElementById('log');
+			function Log(str) {
+				var e = document.createElement('p');
+				e.innerHTML = str;
+				logElm.appendChild(e);
+			}
+			
+			var canvas = document.getElementById('canvas');
+			var ctx = canvas.getContext('2d');
+			
+			ctx.fillStyle = "rgb(200,0,0)";
+
+			var keepalive;
+			var host = window.location.host;
+			var conn = new WebSocket('ws://'+host+'/ws/rle');
+			conn.binaryType = 'arraybuffer';
+			conn.onopen = function() {
+				Log("Connection open: " + conn.extensions);
+				keepalive = window.setInterval(function() {
+					conn.send("Keepalive");
+				}, 5000);
+			};
+			conn.onerror = function(err) {
+				Log("Connection error: " + err.data);
+				if( keepalive )
+					window.clearInterval(keepalive);
+			};
+			conn.onclose = function(evt) {
+				Log("Connection closed: " + evt.code + " " + evt.reason);
+				if( keepalive )
+					window.clearInterval(keepalive);
+			};
+			conn.onmessage = function (msg) {
+				if( typeof msg.data === 'string' )
+					Log("Recv: " + msg.data);
+				else {
+					HandleImgMsg( msg.data );
+				}
+			};
+			
+			var fps = 0;
+			var msgRate = 0;
+			var frameCounter = 0;
+			var frameCounter2 = 0;
+			var msgCounter = 0, msgCounter2 = 0;
+			window.setInterval(function(){
+				fps = (frameCounter + frameCounter2) / 2;
+				frameCounter2 = frameCounter;
+				frameCounter = 0;
+				
+				msgRate = (msgCounter + msgCounter2) / 2;
+				msgCounter2 = msgCounter;
+				msgCounter = 0;
+			}, 1000);
+
+			var imgBuffer;
+			var pending_width;
+			var pending_height;
+			var pending_pixels = null;
+
+			var minPix = 255;
+			var maxPix = 0;
+			function ParsePendingImage() {
+				if( pending_pixels ) {
+					var width = pending_width;
+					var height = pending_height;
+					var pixels = pending_pixels;
+
+					//var min=255, max=0;
+					//console.log( "Min="+min+", max="+max );
+					for( i = 0; i < pixels.length; ++i )
+					{
+						var val = pixels[i];
+						//console.log(val);
+						minPix=Math.min(minPix,val);
+						maxPix=Math.max(maxPix,val);
+					}
+					var range = maxPix-minPix;
+					var scale = 1;
+					var offset = 0;
+					if( range > 0 ) {
+						range = Math.max( range, 255/4 );
+						scale = 255/range;
+						offset = minPix;
+					}
+					statusElm.innerHTML = 'Size: ' + width + 'x' + height + ', Scale=' + scale + ', Offset=' + offset + ', Min='+minPix + ', Max='+maxPix;
+		
+					if( !(imgBuffer && imgBuffer.height == height && imgBuffer.width == width) ) {
+						imgBuffer = ctx.createImageData(width,height);
+					}
+
+					for( i = 0; i < pixels.length; ++i )
+					{
+						var val = (pixels[i] - offset) * scale;
+						for(j = 0; j < 3; ++j )
+							imgBuffer.data[i*4+j] = val;
+						imgBuffer.data[i*4+3] = 255;
+					}
+					
+					ctx.putImageData(imgBuffer,0,0);
+					ctx.fillText("FPS: " + fps,8,16);
+					ctx.fillText("Msg: " + msgRate,8,32);
+					frameCounter = frameCounter + 1;
+
+					pending_pixels = null;
+				}
+			}
+			
+			function HandleImgMsg(img) {
+				var dv = new DataView( img );
+				if( img.byteLength < 4 ) {
+					Log("Short msg: " + img.byteLength);
+					return;
+				}
+
+				var width = dv.getUint16(0);
+				var height = dv.getUint16(2);
+				var numBytes = width * height;
+				//Log( "Size: " + width + " x " + height );
+				if( img.byteLength < (4+numBytes) ) {
+					Log("Short msg: " + img.byteLength + " of " + (4+numBytes));
+					return;
+				}
+				
+				var pixels = new Uint8Array(img,4);
+				
+				var shouldRegister = (pending_pixels == null);
+				pending_width = width;
+				pending_height = height;
+				pending_pixels = pixels;
+				if( shouldRegister ) {
+					window.requestAnimationFrame(ParsePendingImage);
+				}
+
+				msgCounter++;
+			}
+		</script>
+	</body>
+</html>

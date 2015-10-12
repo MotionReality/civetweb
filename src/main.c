@@ -74,7 +74,7 @@
 #if defined(_WIN32)                                                            \
     && !defined(__SYMBIAN32__) /* WINDOWS / UNIX include block */
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0501 /* for tdm-gcc so we can use getconsolewindow */
+#define _WIN32_WINNT 0x0600 /* for tdm-gcc so we can use getconsolewindow */
 #endif
 #undef UNICODE
 #include <windows.h>
@@ -792,6 +792,9 @@ finished:
 #include <_mingw.h>
 #endif
 
+void matt_mod( struct mg_context * pCtx );
+void matt_mod_stop();
+
 static void
 start_civetweb(int argc, char *argv[])
 {
@@ -1033,6 +1036,7 @@ start_civetweb(int argc, char *argv[])
 	for (i = 0; options[i] != NULL; i++) {
 		free(options[i]);
 	}
+    matt_mod( g_ctx );
 
 	if (g_ctx == NULL) {
 		die("Failed to start Civetweb:\n%s",
@@ -1044,6 +1048,7 @@ start_civetweb(int argc, char *argv[])
 static void
 stop_civetweb(void)
 {
+    matt_mod_stop();
 	mg_stop(g_ctx);
 	free(g_user_data.first_message);
 	g_user_data.first_message = NULL;
