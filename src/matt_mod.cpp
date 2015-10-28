@@ -47,6 +47,7 @@
 
 #include <vector>
 #include <set>
+#include "../libjpeg-turbo/turbojpeg.h"
 
 #if defined(_WIN32) && !defined(__SYMBIAN32__) /* WINDOWS / UNIX include block */
     #ifndef _WIN32_WINNT
@@ -81,7 +82,8 @@ void SendImageToAll( ImageData const & img )
     {
         for( auto it = s_connections.begin(); it != s_connections.end(); ++it )
         {
-            mg_websocket_write( *it, WEBSOCKET_OPCODE_BINARY, (const char*)&img[0], img.size() );
+            //mg_websocket_write( *it, WEBSOCKET_OPCODE_BINARY, (const char*)&img[0], img.size() );
+            mg_websocket_write( *it, WEBSOCKET_OPCODE_TEXT, (const char*)&img[0], img.size() );
             ++s_msgCount;
         }
     }
@@ -137,35 +139,64 @@ void ReadImages()
         return;
     }
 
+    tjhandle hTJ = tjInitCompress();
+
+    size_t totalRaw = 0;
+    size_t totalJpeg = 0;
+    size_t totalB64 = 0;
+
     ImgHeader header;
-    std::vector<BYTE> buffer;
+    std::vector<BYTE> rawBuffer;
+    std::vector<unsigned char> jpegBuffer;
+    std::vector<unsigned char> b64Buffer;
     while( 1 == fread( &header, sizeof(header), 1, fp ) )
     {
         auto const w = ntohs( header.width ), h = ntohs( header.height );
-        unsigned int const numBytes = w * h;
+        unsigned int const numBytesRaw = w * h;
         //fprintf( stderr, "[%u] %u x %u == %u\n", s_images.size(), w, h, numBytes );
-        buffer.resize( sizeof(header) + numBytes );
-        memcpy( &buffer[0], &header, sizeof(header) );
-        size_t const numRead = fread( &buffer[sizeof(header)], sizeof(BYTE), numBytes, fp );
-        if( numRead < numBytes )
+        //buffer.resize( sizeof(header) + numBytes );
+        //memcpy( &buffer[0], &header, sizeof(header) );
+        rawBuffer.resize( numBytesRaw );
+        
+        //size_t const numRead = fread( &buffer[sizeof(header)], sizeof(BYTE), numBytes, fp );
+        size_t const numRead = fread( &rawBuffer[0], sizeof(BYTE), numBytesRaw, fp );
+        if( numRead < numBytesRaw )
         {
             fprintf( stderr, "Stopping on partial read: %u bytes\n", numRead );
             break;
         }
 
-        buffer.clear();
-        buffer.push_back(0);
-        buffer.push_back(10);
-        buffer.push_back(0);
-        buffer.push_back(10);
-        BYTE val = s_images.size() & 0xFF;
-        for( auto i = 0; i < 10*10; ++i )
-            buffer.push_back(val);
+        unsigned long maxJpegBytes = tjBufSize(w, h, TJSAMP_GRAY);
+        jpegBuffer.resize( sizeof(header) + maxJpegBytes );
+        memcpy( &jpegBuffer[0], &header, sizeof(header) );
+        unsigned char * jpegPtr = &jpegBuffer[sizeof(header)];
+        unsigned long jpegSize = maxJpegBytes;
+        if( tjCompress2(hTJ, &rawBuffer[0], w, w, h, TJPF_GRAY, &jpegPtr, &jpegSize, TJSAMP_GRAY, 95, TJFLAG_NOREALLOC ) )
+        {
+            fprintf( stderr, "TurboJPEG error: %s\n", tjGetErrorStr() );
+        }
+        else
+        {
+            size_t const triplets = (jpegSize+2)/3; // Relying on integer truncation
+            b64Buffer.resize( triplets * 4 );
+            base64_encode( &jpegBuffer[sizeof(header)], jpegSize, (char*)&b64Buffer[0] );
 
-        s_images.push_back( std::move(buffer) );
+            //jpegBuffer.resize( sizeof(header) + jpegSize );
+
+            totalRaw += rawBuffer.size();
+            totalJpeg += jpegSize;
+            totalB64 += b64Buffer.size();
+
+            s_images.push_back( std::move(b64Buffer) );
+        }
     }
 
-    fprintf( stderr, "Read in %u images @ %u FPS\n", s_images.size(), s_FPS );
+    size_t const count = s_images.size();
+    fprintf( stderr, "Read in %u images @ %u FPS\n", count, s_FPS );
+    fprintf( stderr, "Average raw bytes: %f\n", float(totalRaw)/float(count) );
+    fprintf( stderr, "Average JPEG bytes: %f\n", float(totalJpeg)/float(count) );
+    fprintf( stderr, "Average B64 bytes: %f\n", float(totalB64)/float(count) );
+    fprintf( stderr, "Average B64/raw pct: %f\n", float(totalB64)*100.f/float(totalRaw) );
 }
 
 static int ws_on_connect(const struct mg_connection *, void *)

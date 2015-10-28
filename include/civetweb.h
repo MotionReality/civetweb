@@ -787,6 +787,8 @@ CIVETWEB_API int mg_get_response(struct mg_connection *conn,
 */
 CIVETWEB_API unsigned mg_check_feature(unsigned feature);
 
+CIVETWEB_API void base64_encode(const unsigned char *src, int src_len, char *dst);
+
 #ifdef __cplusplus
 }
 #endif /* __cplusplus */

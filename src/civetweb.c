@@ -4012,7 +4012,7 @@ mg_get_cookie(const char *cookie_header,
 }
 
 #if defined(USE_WEBSOCKET) || defined(USE_LUA)
-static void
+void
 base64_encode(const unsigned char *src, int src_len, char *dst)
 {
 	static const char *b64 =

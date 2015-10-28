@@ -225,7 +225,7 @@ if (CIVETWEB_ENABLE_LUA)
 endif()
 
 # The web server executable
-add_executable(c-executable main.c)
+add_executable(c-executable main.c matt_mod.cpp ${CMAKE_SOURCE_DIR}/libjpeg-turbo/turbojpeg.h )
 set_target_properties(c-executable PROPERTIES
   OUTPUT_NAME "civetweb"
 )
@@ -241,7 +241,7 @@ endif()
 target_include_directories(
   c-executable PUBLIC
   ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(c-executable c-library)
+target_link_libraries(c-executable c-library ${CMAKE_SOURCE_DIR}/libjpeg-turbo/turbojpeg.lib)
 if (LIBRT_FOUND)
   target_link_libraries(c-executable LIBRT::LIBRT)
 endif()
