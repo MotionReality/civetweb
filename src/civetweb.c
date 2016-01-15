@@ -10141,7 +10141,8 @@ set_sock_timeout(SOCKET sock, int milliseconds)
 	struct timeval tv;
 
 #ifdef _WIN32
-	DWORD t = (DWORD)milliseconds;
+	//DWORD t = (DWORD)milliseconds;
+    (void)milliseconds;
 #else
 #if defined(TCP_USER_TIMEOUT)
 	unsigned int uto = (unsigned int)milliseconds;

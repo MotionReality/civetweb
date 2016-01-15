@@ -61,8 +61,14 @@
 static volatile long g_threadDieFlag = 0;
 static volatile long g_threadRunningFlag = 0;
 
-typedef std::vector<BYTE> ImageData;
-static std::vector<ImageData> s_images;
+struct ImageData
+{
+    int width;
+    int height;
+    std::vector<BYTE> data;
+};
+//typedef std::vector<BYTE> ImageData;
+static std::vector<ImageData*> s_images;
 static size_t s_nextImage = 0;
 
 static CRITICAL_SECTION s_csConnections;
@@ -73,22 +79,53 @@ static unsigned int const s_FPS = 60;
 static unsigned __int64 s_lastTick = 0;
 static unsigned int s_msgCount = 0;
 
+static std::vector<unsigned char> jpegBuffer;
+static std::vector<unsigned char> b64Buffer;
+static tjhandle hTJ = nullptr;
 
 void SendImageToAll( ImageData const & img )
 {
-    ::EnterCriticalSection( &s_csConnections );
-    
-    if( !img.empty() )
+    //if( &s_msgCount != 0 ) return;
+
+    if(img.data.empty() || hTJ == nullptr || s_connections.empty())
+        return;
+
+    _CrtCheckMemory();
+    auto const w = img.width, h = img.height;
+
+    unsigned long maxJpegBytes = tjBufSize(w, h, TJSAMP_GRAY);
+    jpegBuffer.resize( maxJpegBytes * 2 );
+    _CrtCheckMemory();
+    unsigned char * jpegPtr = &jpegBuffer[0];
+    unsigned long jpegSize = maxJpegBytes;
+    _CrtCheckMemory();
+    if( tjCompress2(hTJ, &img.data[0], w, w, h, TJPF_GRAY, &jpegPtr, &jpegSize, TJSAMP_GRAY, 95, TJFLAG_NOREALLOC ) )
     {
+        _CrtCheckMemory();
+        fprintf( stderr, "TurboJPEG error: %s\n", tjGetErrorStr() );
+    }
+    else
+    {
+        _CrtCheckMemory();
+        size_t const triplets = (jpegSize+2)/3; // Relying on integer truncation
+        b64Buffer.resize( triplets * 4 * 2 );
+        _CrtCheckMemory();
+        base64_encode( &jpegBuffer[0], jpegSize, (char*)&b64Buffer[0] );
+        _CrtCheckMemory();
+        ::EnterCriticalSection( &s_csConnections );
+    
         for( auto it = s_connections.begin(); it != s_connections.end(); ++it )
         {
             //mg_websocket_write( *it, WEBSOCKET_OPCODE_BINARY, (const char*)&img[0], img.size() );
-            mg_websocket_write( *it, WEBSOCKET_OPCODE_TEXT, (const char*)&img[0], img.size() );
+            mg_websocket_write( *it, WEBSOCKET_OPCODE_TEXT, (const char*)&b64Buffer[0], triplets * 4 );
             ++s_msgCount;
         }
+
+        ::LeaveCriticalSection( &s_csConnections );
+        _CrtCheckMemory();
     }
 
-    ::LeaveCriticalSection( &s_csConnections );
+
 }
 
 void * sender_thread_entry( void * ctx )
@@ -103,7 +140,8 @@ void * sender_thread_entry( void * ctx )
         s_msgCount = 0;
         while( !g_threadDieFlag )
         {
-            SendImageToAll( s_images[s_nextImage] );
+            _CrtCheckMemory();
+            SendImageToAll( *s_images[s_nextImage] );
             s_nextImage = (s_nextImage + 1) % s_images.size();
             
             auto const tick = ::GetTickCount64();
@@ -139,23 +177,27 @@ void ReadImages()
         return;
     }
 
-    tjhandle hTJ = tjInitCompress();
-
     size_t totalRaw = 0;
-    size_t totalJpeg = 0;
-    size_t totalB64 = 0;
+    //size_t totalJpeg = 0;
+    //size_t totalB64 = 0;
 
     ImgHeader header;
-    std::vector<BYTE> rawBuffer;
-    std::vector<unsigned char> jpegBuffer;
-    std::vector<unsigned char> b64Buffer;
+    std::unique_ptr<ImageData> pImage;
+    //std::vector<BYTE> rawBuffer;
+    //std::vector<unsigned char> jpegBuffer;
+    //std::vector<unsigned char> b64Buffer;
     while( 1 == fread( &header, sizeof(header), 1, fp ) )
     {
+        pImage.reset( new ImageData );
+
         auto const w = ntohs( header.width ), h = ntohs( header.height );
         unsigned int const numBytesRaw = w * h;
-        //fprintf( stderr, "[%u] %u x %u == %u\n", s_images.size(), w, h, numBytes );
+        fprintf( stderr, "[%u] %u x %u == %u\n", s_images.size(), w, h, numBytesRaw );
         //buffer.resize( sizeof(header) + numBytes );
         //memcpy( &buffer[0], &header, sizeof(header) );
+        pImage->width = w;
+        pImage->height = h;
+        auto & rawBuffer = pImage->data;
         rawBuffer.resize( numBytesRaw );
         
         //size_t const numRead = fread( &buffer[sizeof(header)], sizeof(BYTE), numBytes, fp );
@@ -166,37 +208,40 @@ void ReadImages()
             break;
         }
 
-        unsigned long maxJpegBytes = tjBufSize(w, h, TJSAMP_GRAY);
-        jpegBuffer.resize( sizeof(header) + maxJpegBytes );
-        memcpy( &jpegBuffer[0], &header, sizeof(header) );
-        unsigned char * jpegPtr = &jpegBuffer[sizeof(header)];
-        unsigned long jpegSize = maxJpegBytes;
-        if( tjCompress2(hTJ, &rawBuffer[0], w, w, h, TJPF_GRAY, &jpegPtr, &jpegSize, TJSAMP_GRAY, 95, TJFLAG_NOREALLOC ) )
-        {
-            fprintf( stderr, "TurboJPEG error: %s\n", tjGetErrorStr() );
-        }
-        else
-        {
-            size_t const triplets = (jpegSize+2)/3; // Relying on integer truncation
-            b64Buffer.resize( triplets * 4 );
-            base64_encode( &jpegBuffer[sizeof(header)], jpegSize, (char*)&b64Buffer[0] );
+        s_images.push_back(pImage.get());
+        pImage.release();
 
-            //jpegBuffer.resize( sizeof(header) + jpegSize );
+        //unsigned long maxJpegBytes = tjBufSize(w, h, TJSAMP_GRAY);
+        //jpegBuffer.resize( sizeof(header) + maxJpegBytes );
+        //memcpy( &jpegBuffer[0], &header, sizeof(header) );
+        //unsigned char * jpegPtr = &jpegBuffer[sizeof(header)];
+        //unsigned long jpegSize = maxJpegBytes;
+        //if( tjCompress2(hTJ, &rawBuffer[0], w, w, h, TJPF_GRAY, &jpegPtr, &jpegSize, TJSAMP_GRAY, 95, TJFLAG_NOREALLOC ) )
+        //{
+        //    fprintf( stderr, "TurboJPEG error: %s\n", tjGetErrorStr() );
+        //}
+        //else
+        //{
+        //    size_t const triplets = (jpegSize+2)/3; // Relying on integer truncation
+        //    b64Buffer.resize( triplets * 4 );
+        //    base64_encode( &jpegBuffer[sizeof(header)], jpegSize, (char*)&b64Buffer[0] );
 
-            totalRaw += rawBuffer.size();
-            totalJpeg += jpegSize;
-            totalB64 += b64Buffer.size();
+        //    //jpegBuffer.resize( sizeof(header) + jpegSize );
 
-            s_images.push_back( std::move(b64Buffer) );
-        }
+        totalRaw += rawBuffer.size();
+        //    totalJpeg += jpegSize;
+        //    totalB64 += b64Buffer.size();
+
+        //    s_images.push_back( std::move(b64Buffer) );
+        //}
     }
 
     size_t const count = s_images.size();
     fprintf( stderr, "Read in %u images @ %u FPS\n", count, s_FPS );
     fprintf( stderr, "Average raw bytes: %f\n", float(totalRaw)/float(count) );
-    fprintf( stderr, "Average JPEG bytes: %f\n", float(totalJpeg)/float(count) );
-    fprintf( stderr, "Average B64 bytes: %f\n", float(totalB64)/float(count) );
-    fprintf( stderr, "Average B64/raw pct: %f\n", float(totalB64)*100.f/float(totalRaw) );
+    //fprintf( stderr, "Average JPEG bytes: %f\n", float(totalJpeg)/float(count) );
+    //fprintf( stderr, "Average B64 bytes: %f\n", float(totalB64)/float(count) );
+    //fprintf( stderr, "Average B64/raw pct: %f\n", float(totalB64)*100.f/float(totalRaw) );
 }
 
 static int ws_on_connect(const struct mg_connection *, void *)
@@ -236,6 +281,7 @@ extern "C" void matt_mod( struct mg_context * ctx )
 {
     ::InitializeCriticalSection( &s_csConnections );
 
+    hTJ = tjInitCompress();
     ReadImages();
 
     mg_set_websocket_handler( ctx, "/ws/rle",
